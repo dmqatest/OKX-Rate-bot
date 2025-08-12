@@ -28,7 +28,6 @@ CURRENCY_IDS = {
     "XTZ": 1029, "DOT": 1486, "JST": 1438
 }
 
-# Conversation states
 SEARCH_INPUT = 1
 
 _cached_assets = []
@@ -69,7 +68,7 @@ def format_datetime_utc(ms):
 
 def get_pair_data():
     assets = fetch_all_pairs()
-    return [(a["currencyName"].upper(), a.get("preRate", 0), a.get("dateHour", 0)) for a in assets]
+    return [(a["currencyName"].upper(), a.get("preRate", 0), a.get("estimatedRate", 0), a.get("dateHour", 0)) for a in assets]
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -93,9 +92,14 @@ async def search_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not asset:
         await update.message.reply_text(f"Ticker {ticker} not found.")
         return ConversationHandler.END
-    apr = asset.get("preRate", 0) * 100
+    pre_rate = asset.get("preRate", 0) * 100
+    est_rate = asset.get("estimatedRate", 0) * 100
     last_time = format_time_utc(asset.get("dateHour", 0))
-    text = f"♻ {ticker} Lending Rates at {last_time}\n\nCurrent APR: **{apr:.2f}%**"
+    text = (
+        f"♻ {ticker} Lending Rates at {last_time}\n\n"
+        f"💰 Current rate: **{pre_rate:.2f}%**\n"
+        f"📈 Predicted rate: **{est_rate:.2f}%**"
+    )
     keyboard = [
         [InlineKeyboardButton("♻ Refresh", callback_data=f"refresh_{ticker}"),
          InlineKeyboardButton("📊 History", callback_data=f"history_{ticker}")],
@@ -116,10 +120,10 @@ async def view_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     end_idx = start_idx + page_size
     pairs_page = pairs[start_idx:end_idx]
     text_lines = []
-    for ticker, apr, date_hour in pairs_page:
+    for ticker, pre_rate, est_rate, date_hour in pairs_page:
         time_str = format_time_utc(date_hour)
-        text_lines.append(f"{ticker} — **{apr*100:.2f}%** ({time_str})")
-    text = "📋 *All Pairs* (sorted by APR descending)\n\n" + "\n".join(text_lines)
+        text_lines.append(f"{ticker} — **{pre_rate:.2f}%** ({time_str})")
+    text = "📋 *All Pairs* (sorted by Current APR descending)\n\n" + "\n".join(text_lines)
     buttons = []
     if start_idx > 0:
         buttons.append(InlineKeyboardButton("⬅ Prev", callback_data=f"view_pairs_{page-1}"))
@@ -130,7 +134,7 @@ async def view_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append(buttons)
     await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ---- Show pair current rate ----
+# ---- Show pair current+predicted rates ----
 async def pair_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -140,9 +144,14 @@ async def pair_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not asset:
         await query.edit_message_text(f"Ticker {ticker} not found.")
         return
-    apr = asset.get("preRate", 0) * 100
+    pre_rate = asset.get("preRate", 0) * 100
+    est_rate = asset.get("estimatedRate", 0) * 100
     last_time = format_time_utc(asset.get("dateHour", 0))
-    text = f"♻ {ticker} Lending Rates at {last_time}\n\nCurrent APR: **{apr:.2f}%**"
+    text = (
+        f"♻ {ticker} Lending Rates at {last_time}\n\n"
+        f"💰 Current rate: **{pre_rate:.2f}%**\n"
+        f"📈 Predicted rate: **{est_rate:.2f}%**"
+    )
     keyboard = [
         [InlineKeyboardButton("♻ Refresh", callback_data=f"refresh_{ticker}"),
          InlineKeyboardButton("📊 History", callback_data=f"history_{ticker}")],
@@ -160,9 +169,14 @@ async def refresh_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not asset:
         await query.edit_message_text(f"Ticker {ticker} not found.")
         return
-    apr = asset.get("preRate", 0) * 100
+    pre_rate = asset.get("preRate", 0) * 100
+    est_rate = asset.get("estimatedRate", 0) * 100
     last_time = format_time_utc(asset.get("dateHour", 0))
-    text = f"♻ {ticker} Lending Rates at {last_time}\n\nCurrent APR: **{apr:.2f}%**"
+    text = (
+        f"♻ {ticker} Lending Rates at {last_time}\n\n"
+        f"💰 Current rate: **{pre_rate:.2f}%**\n"
+        f"📈 Predicted rate: **{est_rate:.2f}%**"
+    )
     keyboard = [
         [InlineKeyboardButton("♻ Refresh", callback_data=f"refresh_{ticker}"),
          InlineKeyboardButton("📊 History", callback_data=f"history_{ticker}")],
@@ -195,9 +209,10 @@ async def history_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append(InlineKeyboardButton("⬅ Prev", callback_data=f"history_menu_{page-1}"))
     if end_idx < len(records):
         buttons.append(InlineKeyboardButton("Next ➡", callback_data=f"history_menu_{page+1}"))
+    # Add "View All Pairs" button here for easy switch
+    buttons.append(InlineKeyboardButton("📋 View All Pairs", callback_data="view_pairs_0"))
     keyboard = [[InlineKeyboardButton(t[0], callback_data=f"history_{t[0]}")] for t in chunk]
-    if buttons:
-        keyboard.append(buttons)
+    keyboard.append(buttons)
     await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ---- History detail ----
@@ -220,75 +235,4 @@ async def history_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for entry in data[:24]:
         apr = entry.get("rate", 0) * 100
         dt_str = format_datetime_utc(entry.get("dateHour", 0))
-        rate_str = f"**{apr:.2f}%**" if apr >= 20 else f"{apr:.2f}%"
-        lines.append(f"{dt_str} — {rate_str}")
-        try:
-            dt_obj = datetime.utcfromtimestamp(entry.get("dateHour", 0) / 1000).date()
-            if dt_obj == today_date:
-                rates_today.append(apr)
-        except Exception:
-            pass
-
-    avg_apr = sum(rates_today) / len(rates_today) if rates_today else 0.0
-    header = f"📊 *{ticker}* Lending Rate — Last 24 records\n\n📌 Average APR for {today_date.isoformat()} (UTC): {avg_apr:.2f}%\n"
-    text = header + "\n".join(lines)
-    await query.edit_message_text(text, parse_mode="Markdown")
-
-# ---- Back to main menu ----
-async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    keyboard = [
-        [InlineKeyboardButton("📋 View All Pairs", callback_data="view_pairs_0")],
-        [InlineKeyboardButton("🔍 Search", callback_data="search_prompt")],
-        [InlineKeyboardButton("📊 History", callback_data="history_menu_0")]
-    ]
-    await query.edit_message_text("Main menu:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-# ---- Generic text handler for search input ----
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("awaiting_search"):
-        context.user_data["awaiting_search"] = False
-        return await search_input(update, context)
-
-# ---- Main callback handler ----
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = update.callback_query.data
-    if data.startswith("view_pairs_"):
-        await view_pairs(update, context)
-    elif data == "search_prompt":
-        context.user_data["awaiting_search"] = True
-        await search_prompt(update, context)
-    elif data.startswith("pair_"):
-        await pair_detail(update, context)
-    elif data.startswith("refresh_"):
-        await refresh_rate(update, context)
-    elif data.startswith("history_menu_"):
-        await history_menu(update, context)
-    elif data.startswith("history_"):
-        await history_detail(update, context)
-    elif data == "back_menu":
-        await back_to_menu(update, context)
-    else:
-        await update.callback_query.answer("Unknown command.", show_alert=True)
-
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-    conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(search_prompt, pattern="^search_prompt$")],
-        states={
-            SEARCH_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)],
-        },
-        fallbacks=[],
-        allow_reentry=True,
-    )
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(conv_handler)
-    app.add_handler(CallbackQueryHandler(callback_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-
-    print("🤖 Bot is running...")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+        rate_str = f"**{apr:.2f}%**" if apr >= 
