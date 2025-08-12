@@ -1,10 +1,15 @@
 import os
 import requests
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from datetime import datetime
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    ReplyKeyboardMarkup, KeyboardButton
+)
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ContextTypes, filters, ConversationHandler
+    CallbackQueryHandler, ContextTypes, filters,
+    ConversationHandler
 )
 
 # Load environment variables locally
@@ -16,7 +21,6 @@ if not BOT_TOKEN:
 API_URL = "https://www.okx.com/priapi/v2/financial/market-lending-info?pageSize=2000&pageIndex=1"
 
 assets_list = []  # cached list
-
 SEARCH_STATE = 1
 
 # Fetch all assets
@@ -67,9 +71,10 @@ async def search_ticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rates = get_asset_rate(ticker)
     if rates:
         pre, est = rates
+        last_update = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
         keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_{ticker}")]]
         await update.message.reply_text(
-            f"💰 *{ticker.upper()} Lending Rates*\n"
+            f"💰 *{ticker.upper()} Lending Rates at {last_update}*\n"
             f"Current rate: {pre:.2f}%\n"
             f"Estimated rate: {est:.2f}%",
             reply_markup=InlineKeyboardMarkup(keyboard),
@@ -120,9 +125,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rates = get_asset_rate(ticker)
         if rates:
             pre, est = rates
+            last_update = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
             keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_{ticker}")]]
             await query.edit_message_text(
-                f"💰 *{ticker} Lending Rates*\n"
+                f"💰 *{ticker} Lending Rates at {last_update}*\n"
                 f"Current rate: {pre:.2f}%\n"
                 f"Estimated rate: {est:.2f}%",
                 reply_markup=InlineKeyboardMarkup(keyboard),
@@ -137,9 +143,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rates = get_asset_rate(ticker)
         if rates:
             pre, est = rates
+            last_update = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
             keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_{ticker}")]]
             await query.edit_message_text(
-                f"♻ Updated *{ticker} Lending Rates*\n"
+                f"♻ Updated *{ticker} Lending Rates at {last_update}*\n"
                 f"Current rate: {pre:.2f}%\n"
                 f"Estimated rate: {est:.2f}%",
                 reply_markup=InlineKeyboardMarkup(keyboard),
