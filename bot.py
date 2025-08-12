@@ -235,4 +235,4 @@ async def history_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for entry in data[:24]:
         apr = entry.get("rate", 0) * 100
         dt_str = format_datetime_utc(entry.get("dateHour", 0))
-        rate_str = f"**{apr:.2f}%**" if apr >= 
+        rate_str = f"**{apr:.2f}%**" if apr >= 20 else f"{apr:.2f}%"
