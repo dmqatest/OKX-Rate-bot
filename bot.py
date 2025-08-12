@@ -30,30 +30,36 @@ CURRENCY_IDS = {
 
 # Conversation states
 SEARCH_INPUT = 1
-PAIR_SEARCH_INPUT = 2
 
-# Cache assets to reduce requests
 _cached_assets = []
 
 def fetch_all_pairs():
     global _cached_assets
     if _cached_assets:
         return _cached_assets
-    resp = requests.get(ALL_PAIRS_URL)
-    data = resp.json()
-    assets = data.get("data", {}).get("list", [])
-    if isinstance(assets, dict):
-        assets = [assets]
-    _cached_assets = assets
-    return _cached_assets
+    try:
+        resp = requests.get(ALL_PAIRS_URL)
+        resp.raise_for_status()
+        data = resp.json()
+        assets = data.get("data", {}).get("list", [])
+        if isinstance(assets, dict):
+            assets = [assets]
+        _cached_assets = assets
+        return _cached_assets
+    except Exception:
+        return []
 
 def fetch_history(currency_id):
-    resp = requests.get(HISTORY_URL_TEMPLATE.format(currency_id))
-    data = resp.json()
-    items = data.get("data", {}).get("list", [])
-    if isinstance(items, dict):
-        items = [items]
-    return items
+    try:
+        resp = requests.get(HISTORY_URL_TEMPLATE.format(currency_id))
+        resp.raise_for_status()
+        data = resp.json()
+        items = data.get("data", {}).get("list", [])
+        if isinstance(items, dict):
+            items = [items]
+        return items
+    except Exception:
+        return []
 
 def format_time_utc(ms):
     return datetime.utcfromtimestamp(ms / 1000).strftime("%H:%M UTC")
@@ -62,7 +68,6 @@ def format_datetime_utc(ms):
     return datetime.utcfromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M UTC")
 
 def get_pair_data():
-    # Return list of tuples (ticker, preRate, dateHour)
     assets = fetch_all_pairs()
     return [(a["currencyName"].upper(), a.get("preRate", 0), a.get("dateHour", 0)) for a in assets]
 
@@ -240,11 +245,50 @@ async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await query.edit_message_text("Main menu:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ---- Generic text handler (only used for search input) ----
+# ---- Generic text handler for search input ----
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("awaiting_search"):
+        context.user_data["awaiting_search"] = False
         return await search_input(update, context)
 
 # ---- Main callback handler ----
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data
+    data = update.callback_query.data
+    if data.startswith("view_pairs_"):
+        await view_pairs(update, context)
+    elif data == "search_prompt":
+        context.user_data["awaiting_search"] = True
+        await search_prompt(update, context)
+    elif data.startswith("pair_"):
+        await pair_detail(update, context)
+    elif data.startswith("refresh_"):
+        await refresh_rate(update, context)
+    elif data.startswith("history_menu_"):
+        await history_menu(update, context)
+    elif data.startswith("history_"):
+        await history_detail(update, context)
+    elif data == "back_menu":
+        await back_to_menu(update, context)
+    else:
+        await update.callback_query.answer("Unknown command.", show_alert=True)
+
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+    conv_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(search_prompt, pattern="^search_prompt$")],
+        states={
+            SEARCH_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)],
+        },
+        fallbacks=[],
+        allow_reentry=True,
+    )
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(conv_handler)
+    app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+
+    print("🤖 Bot is running...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
