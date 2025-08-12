@@ -1,175 +1,178 @@
 import os
 import requests
+from datetime import datetime, timezone
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ContextTypes, filters, ConversationHandler
-)
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# Load environment variables locally
+# Load .env file
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN is missing. Set it in environment variables.")
 
-API_URL = "https://www.okx.com/priapi/v2/financial/market-lending-info?pageSize=2000&pageIndex=1"
+# Supported tickers for history
+CURRENCY_IDS = {
+    "USDT": 7,
+    "USDC": 283,
+    "TON": 2054,
+    "ZRO": 2425497,
+    "APT": 2092,
+    "BERA": 3197,
+    "BETH": 1620,
+    "ETHFI": 1215929,
+    "CVC": 54,
+    "CVX": 1911,
+    "BABY": 3274,
+    "IP": 3261,
+    "KMNO": 1743707,
+    "PARTI": 3185,
+    "MAGIC": 1970,
+    "PENGU": 3230,
+    "SOPH": 3293,
+    "XTZ": 1029,
+    "DOT": 1486,
+    "JST": 1438
+}
 
-assets_list = []  # cached list
+# Fetch current rate for a token
+def fetch_rate(ticker: str) -> str:
+    url = "https://www.okx.com/priapi/v2/financial/market-lending-info?pageSize=2000&pageIndex=1"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    resp = requests.get(url, headers=headers, timeout=10)
+    if resp.status_code != 200:
+        return f"⚠ Failed to fetch data for {ticker}"
 
-SEARCH_STATE = 1
+    data = resp.json()
+    if "data" not in data or "list" not in data["data"]:
+        return "⚠ Unexpected API response."
 
-# Fetch all assets
-def fetch_assets():
-    global assets_list
-    try:
-        resp = requests.get(API_URL, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        if "data" in data and "list" in data["data"]:
-            items = data["data"]["list"]
-            if isinstance(items, dict):
-                items = [items]
-            assets_list = items
-            return True
-    except Exception as e:
-        print(f"Error fetching assets: {e}")
-    return False
+    ticker = ticker.upper()
+    for asset in data["data"]["list"]:
+        if asset["currencyName"].upper() == ticker:
+            pre_rate = asset["preRate"] * 100
+            est_rate = asset["estimatedRate"] * 100
+            updated_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            return (f"♻ Updated *{ticker}* Lending Rates at {updated_time}\n"
+                    f"💰 Current rate: {pre_rate:.2f}%\n"
+                    f"📈 Predicted rate: {est_rate:.2f}%")
+    return f"❌ {ticker} not found."
 
-# Get rates for ticker
-def get_asset_rate(ticker):
-    for item in assets_list:
-        if item.get("currencyName", "").upper() == ticker.upper():
-            pre = float(item.get("preRate", 0)) * 100
-            est = float(item.get("estimatedRate", 0)) * 100
-            return pre, est
-    return None
+# Fetch last 24h history
+def fetch_history(ticker: str) -> str:
+    ticker = ticker.upper()
+    if ticker not in CURRENCY_IDS:
+        return f"❌ {ticker} is not supported for history."
 
-# Start menu
+    url = f"https://www.okx.com/priapi/v2/financial/market-lending-history?currencyId={CURRENCY_IDS[ticker]}&pageSize=300&pageIndex=1"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    resp = requests.get(url, headers=headers, timeout=10)
+    if resp.status_code != 200:
+        return f"⚠ Failed to fetch history for {ticker}."
+
+    data = resp.json()
+    if "data" not in data or "list" not in data["data"]:
+        return "⚠ No history data available."
+
+    history = data["data"]["list"][:24]
+    if not history:
+        return f"⚠ No records found for {ticker}."
+
+    rates = [entry["rate"] * 100 for entry in history]
+    avg_rate = sum(rates) / len(rates)
+
+    output = [f"📊 *{ticker}* Lending Rate — Last 24 records\n"
+              f"📌 Average APR for {datetime.fromtimestamp(history[0]['dateHour']/1000, tz=timezone.utc).strftime('%Y-%m-%d')} (UTC): {avg_rate:.2f}% (based on {len(rates)} records)\n"]
+
+    for entry in history:
+        ts = entry["dateHour"] / 1000
+        time_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        output.append(f"{time_str} — {entry['rate'] * 100:.2f}%")
+
+    return "\n".join(output)
+
+# /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    fetch_assets()
     keyboard = [
-        [KeyboardButton("🔍 Search by Ticker")],
-        [KeyboardButton("📋 View All Pairs")]
+        [InlineKeyboardButton("🔍 Search Token", callback_data="search_prompt")],
+        [InlineKeyboardButton("📜 View All Pairs", callback_data="list_0")],
+        [InlineKeyboardButton("📊 History", callback_data="history_menu")]
     ]
-    await update.message.reply_text(
-        "📊 Welcome! Choose an option:",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    )
+    await update.message.reply_text("Welcome! Choose an option:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # Search handler
-async def search_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✏ Enter the crypto ticker (e.g., TON):")
-    return SEARCH_STATE
+async def search_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.message.text.strip().upper()
+    result = fetch_rate(query)
+    keyboard = [[InlineKeyboardButton("♻ Refresh", callback_data=f"refresh_{query}"),
+                 InlineKeyboardButton("📊 History", callback_data=f"history_{query}")]]
+    await update.message.reply_text(result, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-async def search_ticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ticker = update.message.text.strip()
-    rates = get_asset_rate(ticker)
-    if rates:
-        pre, est = rates
-        keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_{ticker}")]]
-        await update.message.reply_text(
-            f"💰 *{ticker.upper()} Lending Rates*\n"
-            f"Current rate: {pre:.2f}%\n"
-            f"Estimated rate: {est:.2f}%",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
-        )
-    else:
-        await update.message.reply_text(f"❌ No data found for '{ticker.upper()}'")
-    return ConversationHandler.END
+# Pagination for list
+async def list_tokens(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int):
+    url = "https://www.okx.com/priapi/v2/financial/market-lending-info?pageSize=2000&pageIndex=1"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    resp = requests.get(url, headers=headers, timeout=10)
+    data = resp.json()
+    tickers = [asset["currencyName"].upper() for asset in data["data"]["list"]]
+    tickers.sort()
 
-# Paginated list
-async def send_asset_page(update_or_query, context, page):
     per_page = 10
     start_idx = page * per_page
     end_idx = start_idx + per_page
-    chunk = assets_list[start_idx:end_idx]
+    page_tickers = tickers[start_idx:end_idx]
 
-    keyboard = [
-        [InlineKeyboardButton(f"{item['currencyName']}", callback_data=f"asset_{item['currencyName']}")]
-        for item in chunk
-    ]
-
+    buttons = [[InlineKeyboardButton(t, callback_data=f"asset_{t}")] for t in page_tickers]
     nav_buttons = []
     if page > 0:
-        nav_buttons.append(InlineKeyboardButton("⬅ Prev", callback_data=f"page_{page-1}"))
-    if end_idx < len(assets_list):
-        nav_buttons.append(InlineKeyboardButton("Next ➡", callback_data=f"page_{page+1}"))
+        nav_buttons.append(InlineKeyboardButton("⬅ Prev", callback_data=f"list_{page-1}"))
+    if end_idx < len(tickers):
+        nav_buttons.append(InlineKeyboardButton("Next ➡", callback_data=f"list_{page+1}"))
     if nav_buttons:
-        keyboard.append(nav_buttons)
+        buttons.append(nav_buttons)
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.edit_message_text("📜 All Pairs:", reply_markup=InlineKeyboardMarkup(buttons))
 
-    if hasattr(update_or_query, "message") and update_or_query.message:
-        await update_or_query.message.reply_text(f"📄 Page {page+1}", reply_markup=reply_markup)
-    else:
-        await update_or_query.edit_message_text(f"📄 Page {page+1}", reply_markup=reply_markup)
-
-# Callback buttons
+# Callback handler
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    data = query.data
     await query.answer()
 
-    if query.data.startswith("page_"):
-        page = int(query.data.split("_")[1])
-        await send_asset_page(query, context, page)
+    if data.startswith("list_"):
+        page = int(data.split("_")[1])
+        await list_tokens(update, context, page)
 
-    elif query.data.startswith("asset_"):
-        ticker = query.data.split("_")[1]
-        rates = get_asset_rate(ticker)
-        if rates:
-            pre, est = rates
-            keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_{ticker}")]]
-            await query.edit_message_text(
-                f"💰 *{ticker} Lending Rates*\n"
-                f"Current rate: {pre:.2f}%\n"
-                f"Estimated rate: {est:.2f}%",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="Markdown"
-            )
-        else:
-            await query.edit_message_text(f"❌ No data for {ticker}")
+    elif data.startswith("asset_"):
+        ticker = data.split("_", 1)[1]
+        result = fetch_rate(ticker)
+        keyboard = [[InlineKeyboardButton("♻ Refresh", callback_data=f"refresh_{ticker}"),
+                     InlineKeyboardButton("📊 History", callback_data=f"history_{ticker}")]]
+        await query.edit_message_text(result, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-    elif query.data.startswith("refresh_"):
-        ticker = query.data.split("_")[1]
-        fetch_assets()
-        rates = get_asset_rate(ticker)
-        if rates:
-            pre, est = rates
-            keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_{ticker}")]]
-            await query.edit_message_text(
-                f"♻ Updated *{ticker} Lending Rates*\n"
-                f"Current rate: {pre:.2f}%\n"
-                f"Estimated rate: {est:.2f}%",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="Markdown"
-            )
-        else:
-            await query.edit_message_text(f"❌ No updated data for {ticker}")
+    elif data.startswith("refresh_"):
+        ticker = data.split("_", 1)[1]
+        result = fetch_rate(ticker)
+        keyboard = [[InlineKeyboardButton("♻ Refresh", callback_data=f"refresh_{ticker}"),
+                     InlineKeyboardButton("📊 History", callback_data=f"history_{ticker}")]]
+        await query.edit_message_text(result, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-# Handle text menu clicks
-async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if text == "📋 View All Pairs":
-        await send_asset_page(update, context, 0)
-    elif text == "🔍 Search by Ticker":
-        return await search_start(update, context)
+    elif data == "history_menu":
+        buttons = [[InlineKeyboardButton(t, callback_data=f"history_{t}")] for t in CURRENCY_IDS.keys()]
+        await query.edit_message_text("📊 Select a token for history:", reply_markup=InlineKeyboardMarkup(buttons))
+
+    elif data.startswith("history_"):
+        ticker = data.split("_", 1)[1]
+        result = fetch_history(ticker)
+        await query.edit_message_text(result, parse_mode="Markdown")
 
 # Main
-if __name__ == "__main__":
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    search_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^🔍 Search by Ticker$"), search_start)],
-        states={SEARCH_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, search_ticker)]},
-        fallbacks=[],
-    )
-
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(search_conv)
-    app.add_handler(MessageHandler(filters.Regex("^📋 View All Pairs$"), menu_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_token))
     app.add_handler(CallbackQueryHandler(button_handler))
-
-    print("🤖 Bot is running...")
     app.run_polling()
+
+if __name__ == "__main__":
+    main()
