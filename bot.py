@@ -1,13 +1,13 @@
 import os
 import requests
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ContextTypes, filters
+    CallbackQueryHandler, ContextTypes, filters, ConversationHandler
 )
 
-# Load .env locally
+# Load environment variables locally
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -15,10 +15,11 @@ if not BOT_TOKEN:
 
 API_URL = "https://www.okx.com/priapi/v2/financial/market-lending-info?pageSize=2000&pageIndex=1"
 
-# Store asset list in memory
-assets_list = []
+assets_list = []  # cached list
 
-# --- Fetch all assets ---
+SEARCH_STATE = 1
+
+# Fetch all assets
 def fetch_assets():
     global assets_list
     try:
@@ -35,7 +36,7 @@ def fetch_assets():
         print(f"Error fetching assets: {e}")
     return False
 
-# --- Get rate for a specific asset ---
+# Get rates for ticker
 def get_asset_rate(ticker):
     for item in assets_list:
         if item.get("currencyName", "").upper() == ticker.upper():
@@ -44,22 +45,42 @@ def get_asset_rate(ticker):
             return pre, est
     return None
 
-# --- Start command ---
+# Start menu
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if fetch_assets():
+    fetch_assets()
+    keyboard = [
+        [KeyboardButton("🔍 Search by Ticker")],
+        [KeyboardButton("📋 View All Pairs")]
+    ]
+    await update.message.reply_text(
+        "📊 Welcome! Choose an option:",
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    )
+
+# Search handler
+async def search_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("✏ Enter the crypto ticker (e.g., TON):")
+    return SEARCH_STATE
+
+async def search_ticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ticker = update.message.text.strip()
+    rates = get_asset_rate(ticker)
+    if rates:
+        pre, est = rates
+        keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_{ticker}")]]
         await update.message.reply_text(
-            "📊 Welcome! You can select a crypto from the list or type its ticker (e.g., TON)\n"
-            "Use /list to browse available assets."
+            f"💰 *{ticker.upper()} Lending Rates*\n"
+            f"Current rate: {pre:.2f}%\n"
+            f"Estimated rate: {est:.2f}%",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
         )
     else:
-        await update.message.reply_text("❌ Failed to fetch assets. Try again later.")
+        await update.message.reply_text(f"❌ No data found for '{ticker.upper()}'")
+    return ConversationHandler.END
 
-# --- List command with pagination ---
-async def list_assets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    page = 0
-    await send_asset_page(update, context, page)
-
-async def send_asset_page(update, context, page):
+# Paginated list
+async def send_asset_page(update_or_query, context, page):
     per_page = 10
     start_idx = page * per_page
     end_idx = start_idx + per_page
@@ -80,56 +101,75 @@ async def send_asset_page(update, context, page):
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    if update.message:
-        await update.message.reply_text(f"📄 Page {page+1}", reply_markup=reply_markup)
-    elif update.callback_query:
-        await update.callback_query.edit_message_text(f"📄 Page {page+1}", reply_markup=reply_markup)
+    if hasattr(update_or_query, "message") and update_or_query.message:
+        await update_or_query.message.reply_text(f"📄 Page {page+1}", reply_markup=reply_markup)
+    else:
+        await update_or_query.edit_message_text(f"📄 Page {page+1}", reply_markup=reply_markup)
 
-# --- Handle button clicks ---
+# Callback buttons
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     if query.data.startswith("page_"):
         page = int(query.data.split("_")[1])
-        await send_asset_page(update, context, page)
+        await send_asset_page(query, context, page)
+
     elif query.data.startswith("asset_"):
         ticker = query.data.split("_")[1]
         rates = get_asset_rate(ticker)
         if rates:
             pre, est = rates
+            keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_{ticker}")]]
             await query.edit_message_text(
                 f"💰 *{ticker} Lending Rates*\n"
                 f"Current rate: {pre:.2f}%\n"
                 f"Estimated rate: {est:.2f}%",
+                reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="Markdown"
             )
         else:
             await query.edit_message_text(f"❌ No data for {ticker}")
 
-# --- Handle manual text input ---
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ticker = update.message.text.strip()
-    rates = get_asset_rate(ticker)
-    if rates:
-        pre, est = rates
-        await update.message.reply_text(
-            f"💰 *{ticker.upper()} Lending Rates*\n"
-            f"Current rate: {pre:.2f}%\n"
-            f"Estimated rate: {est:.2f}%",
-            parse_mode="Markdown"
-        )
-    else:
-        await update.message.reply_text(f"❌ No data found for '{ticker.upper()}'")
+    elif query.data.startswith("refresh_"):
+        ticker = query.data.split("_")[1]
+        fetch_assets()
+        rates = get_asset_rate(ticker)
+        if rates:
+            pre, est = rates
+            keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_{ticker}")]]
+            await query.edit_message_text(
+                f"♻ Updated *{ticker} Lending Rates*\n"
+                f"Current rate: {pre:.2f}%\n"
+                f"Estimated rate: {est:.2f}%",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+        else:
+            await query.edit_message_text(f"❌ No updated data for {ticker}")
 
-# --- Main ---
+# Handle text menu clicks
+async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text == "📋 View All Pairs":
+        await send_asset_page(update, context, 0)
+    elif text == "🔍 Search by Ticker":
+        return await search_start(update, context)
+
+# Main
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    search_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^🔍 Search by Ticker$"), search_start)],
+        states={SEARCH_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, search_ticker)]},
+        fallbacks=[],
+    )
+
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("list", list_assets))
+    app.add_handler(search_conv)
+    app.add_handler(MessageHandler(filters.Regex("^📋 View All Pairs$"), menu_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
     print("🤖 Bot is running...")
     app.run_polling()
